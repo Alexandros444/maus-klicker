@@ -1,4 +1,7 @@
-"""Maus-Klicker - Mausklick-Abläufe aufnehmen, bearbeiten und abspielen.
+"""Maus-Klicker - Maus- und Tastatur-Abläufe aufnehmen, bearbeiten und abspielen.
+
+Ein Schritt ist entweder ein Mausklick an einer Position, ein Text, der
+getippt wird, oder eine Tastenkombination (z. B. Strg+S).
 
 Jeder Ablauf wird als gut lesbare JSON-Datei gespeichert (Standard:
 sequence.json neben diesem Skript) und nach jeder Änderung automatisch gesichert.
@@ -40,7 +43,7 @@ from pynput import keyboard, mouse  # noqa: E402  (must come after DPI setup)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FILE = os.path.join(APP_DIR, "sequence.json")
-FILE_VERSION = 2
+FILE_VERSION = 3
 
 BUTTONS = {
     "left": mouse.Button.left,
@@ -49,13 +52,24 @@ BUTTONS = {
 }
 
 BUTTON_LABELS = {"left": "links", "right": "rechts", "middle": "Mitte"}
+CLICK_LABELS = {"left": "Linksklick", "right": "Rechtsklick", "middle": "Mittelklick"}
+
+STEP_TYPES = {"click": "Klick", "text": "Text", "key": "Taste"}
+# Fields stored in the JSON for each step type (besides label/type/delay/enabled).
+STEP_FIELDS = {
+    "click": ("x", "y", "relative", "button", "clicks"),
+    "text": ("text",),
+    "key": ("keys",),
+}
 
 DEFAULT_SETTINGS = {
     "repeat": 1,              # 0 = repeat forever
     "start_delay": 3.0,       # seconds before replay starts
     "move_duration": 0.2,     # seconds for each mouse movement
     "default_delay": 0.5,     # wait before a step that has no recorded timing
+    "type_delay": 0.03,       # seconds between typed characters
     "record_timing": True,    # use real time between recorded clicks as delay
+    "record_keyboard": True,  # record typing / key combos in "record multiple"
     "minimize_on_play": True,
     "bring_to_front": True,   # activate the program window before replay
 }
@@ -64,14 +78,110 @@ COLUMNS = (
     # id, heading, width, anchor
     ("idx", "#", 40, "center"),
     ("enabled", "An", 40, "center"),
-    ("label", "Bezeichnung", 200, "w"),
+    ("type", "Typ", 55, "center"),
+    ("label", "Bezeichnung", 180, "w"),
     ("coords", "Koordinaten", 90, "center"),
-    ("x", "X", 65, "center"),
-    ("y", "Y", 65, "center"),
-    ("button", "Taste", 65, "center"),
-    ("clicks", "Klicks", 55, "center"),
+    ("x", "X", 60, "center"),
+    ("y", "Y", 60, "center"),
+    ("action", "Aktion", 160, "w"),
     ("delay", "Warten vorher (s)", 125, "center"),
 )
+
+
+# --------------------------------------------------------------------------- #
+# Keyboard helpers
+# --------------------------------------------------------------------------- #
+# Key combos are stored with pynput's key names ("ctrl+shift+s", "enter").
+# German names are shown in the GUI and accepted when typing a combo.
+MODIFIERS = ("ctrl", "alt", "shift", "cmd")
+KEY_DISPLAY = {
+    "ctrl": "Strg", "alt": "Alt", "shift": "Umschalt", "cmd": "Win",
+    "enter": "Enter", "tab": "Tab", "esc": "Esc", "space": "Leertaste",
+    "backspace": "Rücktaste", "delete": "Entf", "insert": "Einfg",
+    "home": "Pos1", "end": "Ende", "page_up": "Bild↑", "page_down": "Bild↓",
+    "up": "↑", "down": "↓", "left": "←", "right": "→",
+    "caps_lock": "Feststell", "print_screen": "Druck", "menu": "Menü", "plus": "Plus",
+}
+KEY_ALIASES = {label.lower(): name for name, label in KEY_DISPLAY.items()}
+KEY_ALIASES.update({
+    "control": "ctrl", "umschalt": "shift", "win": "cmd", "windows": "cmd",
+    "return": "enter", "eingabe": "enter", "escape": "esc", "leer": "space",
+    "del": "delete", "ins": "insert", "pgup": "page_up", "pgdn": "page_down",
+    "bild auf": "page_up", "bild ab": "page_down",
+})
+
+
+def parse_keys(text):
+    """'Strg+Umschalt+S' -> 'ctrl+shift+s'. Raises ValueError for unknown keys."""
+    parts = [p.strip().lower() for p in str(text).split("+")]
+    names = []
+    for part in parts:
+        if not part:
+            raise ValueError("Leerer Tastenname (für die Plus-Taste 'Plus' schreiben)")
+        name = KEY_ALIASES.get(part, part)
+        if name not in keyboard.Key.__members__ and len(name) != 1 and name != "plus":
+            raise ValueError(f"Unbekannte Taste: {part}")
+        if name not in names:
+            names.append(name)
+    others = [n for n in names if n not in MODIFIERS]
+    if len(others) > 1:
+        raise ValueError("Außer Strg/Alt/Umschalt/Win ist nur eine Taste pro Kombination erlaubt")
+    return "+".join([m for m in MODIFIERS if m in names] + others)
+
+
+def format_keys(keys):
+    """'ctrl+shift+s' -> 'Strg+Umschalt+S'"""
+    def label(name):
+        if name in KEY_DISPLAY:
+            return KEY_DISPLAY[name]
+        if len(name) == 1 or (name[0] == "f" and name[1:].isdigit()):
+            return name.upper()
+        return name
+    return "+".join(label(n) for n in keys.split("+")) if keys else ""
+
+
+def key_object(name):
+    """pynput key for a stored key name."""
+    if name in keyboard.Key.__members__:
+        return keyboard.Key[name]
+    char = "+" if name == "plus" else name
+    if char.isascii() and char.isalnum():
+        # Virtual key codes of A-Z / 0-9 equal their upper-case ASCII codes;
+        # sending these (instead of characters) makes Ctrl+S etc. work.
+        return keyboard.KeyCode.from_vk(ord(char.upper()))
+    return keyboard.KeyCode.from_char(char)
+
+
+def recorded_key_name(key):
+    """Stored key name for a key event from the listener (or None)."""
+    if isinstance(key, keyboard.Key):
+        for mod in MODIFIERS:          # ctrl_l, shift_r, alt_gr, cmd_l, ...
+            if key.name.startswith(mod):
+                return mod
+        return key.name
+    vk = getattr(key, "vk", None)
+    if vk and (0x41 <= vk <= 0x5A or 0x30 <= vk <= 0x39):
+        return chr(vk).lower()
+    char = getattr(key, "char", None)
+    if char and char.isprintable():
+        return "plus" if char == "+" else char
+    return None
+
+
+def action_text(ev):
+    """What a step does, as shown in the 'Aktion' column."""
+    if ev["type"] == "click":
+        return click_action(ev["button"], ev["clicks"])
+    if ev["type"] == "text":
+        return f"„{ev['text']}“"
+    return format_keys(ev["keys"])
+
+
+def click_action(button, clicks):
+    return CLICK_LABELS[button] + (f" ×{clicks}" if clicks > 1 else "")
+
+
+CLICK_ACTIONS = {click_action(b, n): (b, n) for b in BUTTONS for n in (1, 2, 3)}
 
 
 # --------------------------------------------------------------------------- #
@@ -300,11 +410,14 @@ def describe_program(program):
 def make_event(**values):
     event = {
         "label": "",
+        "type": "click",      # click, text or key
         "x": 0,
         "y": 0,
         "relative": False,    # True = relative to the program window
         "button": "left",
         "clicks": 1,
+        "text": "",           # text steps: typed character by character
+        "keys": "",           # key steps: e.g. "ctrl+s"
         "delay": DEFAULT_SETTINGS["default_delay"],
         "enabled": True,
     }
@@ -316,8 +429,14 @@ def make_event(**values):
 
 def coerce_field(name, value):
     """Convert a value (often a string typed by the user) to the field's type."""
-    if name == "label":
+    if name in ("label", "text"):
         return str(value)
+    if name == "type":
+        if value not in STEP_TYPES:
+            raise ValueError(f"Unbekannter Schritt-Typ: {value}")
+        return value
+    if name == "keys":
+        return parse_keys(value) if str(value).strip() else ""
     if name in ("x", "y"):
         return int(round(float(value)))
     if name == "clicks":
@@ -328,13 +447,21 @@ def coerce_field(name, value):
         value = str(value).strip().lower()
         value = {label.lower(): key for key, label in BUTTON_LABELS.items()}.get(value, value)
         if value not in BUTTONS:
-            raise ValueError(f"Taste muss eine von {', '.join(BUTTON_LABELS.values())} sein")
+            raise ValueError(f"Maustaste muss eine von {', '.join(BUTTON_LABELS.values())} sein")
         return value
     if name in ("enabled", "relative"):
         if isinstance(value, str):
             return value.strip().lower() in ("1", "true", "yes", "on", "✓")
         return bool(value)
     raise KeyError(name)
+
+
+def compact_event(ev):
+    """Only the fields that matter for the step's type, for a readable JSON."""
+    out = {"label": ev["label"], "type": ev["type"]}
+    out.update({k: ev[k] for k in STEP_FIELDS[ev["type"]]})
+    out.update(delay=ev["delay"], enabled=ev["enabled"])
+    return out
 
 
 def load_sequence(path):
@@ -350,7 +477,8 @@ def load_sequence(path):
 
 
 def save_sequence(path, settings, program, events):
-    data = {"version": FILE_VERSION, "settings": settings, "program": program, "events": events}
+    data = {"version": FILE_VERSION, "settings": settings, "program": program,
+            "events": [compact_event(ev) for ev in events]}
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -367,6 +495,7 @@ class EventDialog(tk.Toplevel):
         parent = app.root
         super().__init__(parent)
         self.app = app
+        self.event = event
         self.title(title)
         self.transient(parent)
         self.resizable(False, False)
@@ -375,11 +504,14 @@ class EventDialog(tk.Toplevel):
 
         self.vars = {
             "label": tk.StringVar(value=event["label"]),
+            "type": tk.StringVar(value=event["type"]),
             "x": tk.StringVar(value=str(event["x"])),
             "y": tk.StringVar(value=str(event["y"])),
             "relative": tk.BooleanVar(value=event["relative"]),
             "button": tk.StringVar(value=BUTTON_LABELS[event["button"]]),
             "clicks": tk.StringVar(value=str(event["clicks"])),
+            "text": tk.StringVar(value=event["text"]),
+            "keys": tk.StringVar(value=format_keys(event["keys"])),
             "delay": tk.StringVar(value=str(event["delay"])),
             "enabled": tk.BooleanVar(value=event["enabled"]),
         }
@@ -387,43 +519,73 @@ class EventDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=12)
         body.grid(sticky="nsew")
 
-        def row(r, text, widget):
-            ttk.Label(body, text=text).grid(row=r, column=0, sticky="w", pady=3, padx=(0, 8))
+        def row(parent, r, text, widget):
+            ttk.Label(parent, text=text).grid(row=r, column=0, sticky="w", pady=3, padx=(0, 8))
             widget.grid(row=r, column=1, columnspan=2, sticky="ew", pady=3)
 
-        label_entry = ttk.Entry(body, textvariable=self.vars["label"], width=32)
-        row(0, "Bezeichnung", label_entry)
+        label_entry = ttk.Entry(body, textvariable=self.vars["label"], width=36)
+        row(body, 0, "Bezeichnung", label_entry)
 
-        ttk.Label(body, text="Position").grid(row=1, column=0, sticky="w", pady=3)
-        pos = ttk.Frame(body)
-        pos.grid(row=1, column=1, columnspan=2, sticky="ew")
+        types = ttk.Frame(body)
+        for value, text in (("click", "Mausklick"), ("text", "Text tippen"), ("key", "Tastenkombination")):
+            ttk.Radiobutton(types, text=text, value=value, variable=self.vars["type"],
+                            command=self._show_type).pack(side="left", padx=(0, 10))
+        row(body, 1, "Typ", types)
+
+        # Mouse click
+        self.frames = {"click": ttk.Frame(body), "text": ttk.Frame(body), "key": ttk.Frame(body)}
+        click = self.frames["click"]
+        ttk.Label(click, text="Position").grid(row=0, column=0, sticky="w", pady=3, padx=(0, 8))
+        pos = ttk.Frame(click)
+        pos.grid(row=0, column=1, columnspan=2, sticky="ew")
         ttk.Label(pos, text="X").pack(side="left")
         ttk.Entry(pos, textvariable=self.vars["x"], width=7).pack(side="left", padx=(2, 8))
         ttk.Label(pos, text="Y").pack(side="left")
         ttk.Entry(pos, textvariable=self.vars["y"], width=7).pack(side="left", padx=(2, 0))
 
-        rel_check = ttk.Checkbutton(body, text="Relativ zum Programmfenster",
+        rel_check = ttk.Checkbutton(click, text="Relativ zum Programmfenster",
                                     variable=self.vars["relative"], command=self._toggle_relative)
-        rel_check.grid(row=2, column=1, columnspan=2, sticky="w")
+        rel_check.grid(row=1, column=1, columnspan=2, sticky="w")
         if not app.program and not event["relative"]:
             rel_check.state(["disabled"])
 
-        pick = ttk.Frame(body)
-        pick.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(2, 6))
+        pick = ttk.Frame(click)
+        pick.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(2, 6))
         self.pick_btn = ttk.Button(pick, text="Mausposition in 3 s übernehmen", command=self._start_capture)
         self.pick_btn.pack(side="left")
         ttk.Button(pick, text="Position zeigen", command=self._show_position).pack(side="left", padx=6)
 
-        row(4, "Taste", ttk.Combobox(body, textvariable=self.vars["button"],
-                                      values=list(BUTTON_LABELS.values()), state="readonly", width=10))
-        row(5, "Klicks", ttk.Spinbox(body, textvariable=self.vars["clicks"], from_=1, to=3, width=10))
-        row(6, "Warten vorher (s)", ttk.Spinbox(body, textvariable=self.vars["delay"],
-                                              from_=0, to=3600, increment=0.1, width=10))
+        row(click, 3, "Maustaste", ttk.Combobox(click, textvariable=self.vars["button"],
+                                                values=list(BUTTON_LABELS.values()), state="readonly", width=10))
+        row(click, 4, "Klicks", ttk.Spinbox(click, textvariable=self.vars["clicks"], from_=1, to=3, width=10))
+
+        # Typed text
+        text = self.frames["text"]
+        self.text_entry = ttk.Entry(text, textvariable=self.vars["text"], width=36)
+        row(text, 0, "Text", self.text_entry)
+        ttk.Label(text, text="Wird Zeichen für Zeichen in das aktive Fenster getippt.",
+                  foreground="#666").grid(row=1, column=1, sticky="w")
+
+        # Key combination
+        key = self.frames["key"]
+        self.key_entry = ttk.Entry(key, textvariable=self.vars["keys"], width=36)
+        row(key, 0, "Tasten", self.key_entry)
+        ttk.Label(key, text="Mit + verbinden, z. B. Enter, Tab, F5, Strg+S,\n"
+                            "Alt+F4, Umschalt+Tab, Strg+Umschalt+Esc, Win+D",
+                  foreground="#666", justify="left").grid(row=1, column=1, sticky="w")
+
+        for frame in self.frames.values():
+            frame.grid(row=2, column=0, columnspan=3, sticky="ew")
+            frame.columnconfigure(0, minsize=110)
+
+        row(body, 3, "Warten vorher (s)", ttk.Spinbox(body, textvariable=self.vars["delay"],
+                                                     from_=0, to=3600, increment=0.1, width=10))
         ttk.Checkbutton(body, text="Aktiv", variable=self.vars["enabled"]).grid(
-            row=7, column=1, sticky="w", pady=3)
+            row=4, column=1, sticky="w", pady=3)
+        body.columnconfigure(0, minsize=110)
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=8, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(buttons, text="OK", command=self._ok).pack(side="left", padx=4)
         ttk.Button(buttons, text="Abbrechen", command=self._cancel).pack(side="left")
 
@@ -431,12 +593,24 @@ class EventDialog(tk.Toplevel):
         self.bind("<Escape>", lambda e: self._cancel())
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
-        label_entry.focus_set()
-        label_entry.select_range(0, "end")
+        self._show_type(focus=False)
+        focus = {"text": self.text_entry, "key": self.key_entry}.get(event["type"], label_entry)
+        focus.focus_set()
+        focus.select_range(0, "end")
         self.update_idletasks()
         self.geometry(f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 60}")
         self.grab_set()
         self.wait_window(self)
+
+    def _show_type(self, focus=True):
+        current = self.vars["type"].get()
+        for name, frame in self.frames.items():
+            if name == current:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        if focus and current in ("text", "key"):
+            (self.text_entry if current == "text" else self.key_entry).focus_set()
 
     def _xy(self):
         try:
@@ -493,8 +667,20 @@ class EventDialog(tk.Toplevel):
         mouse.Controller().position = xy
 
     def _ok(self):
+        values = {k: v.get() for k, v in self.vars.items()}
+        step_type = values["type"]
+        # Keep the fields of the other step types as they were, so switching
+        # the type back and forth doesn't lose anything.
+        for other, fields in STEP_FIELDS.items():
+            if other != step_type:
+                for field in fields:
+                    values[field] = self.event[field]
         try:
-            self.result = make_event(**{k: v.get() for k, v in self.vars.items()})
+            if step_type == "key" and not values["keys"].strip():
+                raise ValueError("Bitte mindestens eine Taste angeben.")
+            if step_type == "text" and not values["text"]:
+                raise ValueError("Bitte einen Text angeben.")
+            self.result = make_event(**values)
         except (ValueError, KeyError) as exc:
             messagebox.showerror("Ungültiger Wert", str(exc), parent=self)
             return
@@ -526,6 +712,9 @@ class ClickerApp:
         self.recording = None           # None, "single", "multi" or "pick"
         self.mouse_listener = None
         self.last_click_time = None
+        self._rec_keyboard = False      # copy of the setting for the listener thread
+        self._rec_text = None           # text step that typed characters are added to
+        self._held = set()              # modifier keys currently held (listener thread)
 
         self.playing = False
         self.stop_event = threading.Event()
@@ -541,7 +730,8 @@ class ClickerApp:
         self._build_ui()
         self._load(path, create_if_missing=True)
 
-        self.key_listener = keyboard.Listener(on_press=self._on_global_key)
+        self.key_listener = keyboard.Listener(on_press=self._on_global_key,
+                                              on_release=self._on_global_key_release)
         self.key_listener.daemon = True
         self.key_listener.start()
 
@@ -556,8 +746,8 @@ class ClickerApp:
         # Sizes below are for 100 % display scaling; Tk already scales the
         # fonts, so scale window size, column widths and row height to match.
         s = self.ui_scale = root.winfo_fpixels("1i") / 96
-        root.geometry(f"{round(1060 * s)}x{round(680 * s)}")
-        root.minsize(round(920 * s), round(560 * s))
+        root.geometry(f"{round(1060 * s)}x{round(760 * s)}")
+        root.minsize(round(920 * s), round(640 * s))
 
         style = ttk.Style(root)
         if "vista" in style.theme_names():
@@ -590,18 +780,28 @@ class ClickerApp:
                         variable=self.v_bring_to_front).pack(side="right")
 
         # Record bar
-        rec = ttk.LabelFrame(root, text="Aufnahme", padding=8)
-        rec.pack(fill="x", padx=8, pady=(8, 0))
+        rec_box = ttk.LabelFrame(root, text="Aufnahme", padding=8)
+        rec_box.pack(fill="x", padx=8, pady=(8, 0))
+        rec = ttk.Frame(rec_box)
+        rec.pack(fill="x")
         self.rec_single_btn = ttk.Button(rec, text="● Klick aufnehmen", command=self.record_single)
         self.rec_single_btn.pack(side="left")
         self.rec_multi_btn = ttk.Button(rec, text="●● Mehrere aufnehmen", command=self.toggle_record_multi)
         self.rec_multi_btn.pack(side="left", padx=4)
-        ttk.Button(rec, text="+ Mausposition hinzufügen (F8)", command=self.add_current_position).pack(side="left")
-        ttk.Button(rec, text="+ Manuell hinzufügen...", command=self.add_manual).pack(side="left", padx=4)
 
         self.v_record_timing = tk.BooleanVar(value=DEFAULT_SETTINGS["record_timing"])
-        ttk.Checkbutton(rec, text="Zeit zwischen Klicks aufnehmen",
+        ttk.Checkbutton(rec, text="Zeit zwischen Schritten aufnehmen",
                         variable=self.v_record_timing).pack(side="left", padx=(12, 0))
+        self.v_record_keyboard = tk.BooleanVar(value=DEFAULT_SETTINGS["record_keyboard"])
+        ttk.Checkbutton(rec, text="Tastatur mitaufnehmen",
+                        variable=self.v_record_keyboard).pack(side="left", padx=(12, 0))
+
+        add = ttk.Frame(rec_box)
+        add.pack(fill="x", pady=(6, 0))
+        ttk.Button(add, text="+ Mausposition (F8)", command=self.add_current_position).pack(side="left")
+        ttk.Button(add, text="+ Klick...", command=self.add_manual).pack(side="left", padx=4)
+        ttk.Button(add, text="+ Text...", command=lambda: self.add_manual("text")).pack(side="left")
+        ttk.Button(add, text="+ Taste...", command=lambda: self.add_manual("key")).pack(side="left", padx=4)
 
         # Sequence list
         mid = ttk.LabelFrame(root, text="Ablauf", padding=8)
@@ -665,6 +865,7 @@ class ClickerApp:
         self.v_start_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["start_delay"]))
         self.v_move_duration = tk.StringVar(value=str(DEFAULT_SETTINGS["move_duration"]))
         self.v_default_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["default_delay"]))
+        self.v_type_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["type_delay"]))
         self.v_minimize = tk.BooleanVar(value=DEFAULT_SETTINGS["minimize_on_play"])
 
         def spin(text, var, frm, to, inc, width=6):
@@ -676,7 +877,7 @@ class ClickerApp:
         spin("Startverzögerung (s)", self.v_start_delay, 0, 60, 0.5)
         spin("Bewegungszeit (s)", self.v_move_duration, 0, 5, 0.05)
         spin("Standard-Wartezeit (s)", self.v_default_delay, 0, 60, 0.1)
-        ttk.Checkbutton(play, text="Beim Abspielen minimieren", variable=self.v_minimize).pack(side="left")
+        spin("Tippverzögerung (s)", self.v_type_delay, 0, 2, 0.01)
 
         bottom = ttk.Frame(root, padding=8)
         bottom.pack(fill="x")
@@ -688,9 +889,12 @@ class ClickerApp:
         ttk.Label(bottom, textvariable=self.status_var).pack(side="left", padx=10)
         self.count_var = tk.StringVar()
         ttk.Label(bottom, textvariable=self.count_var, foreground="#555").pack(side="right")
+        ttk.Checkbutton(bottom, text="Beim Abspielen minimieren",
+                        variable=self.v_minimize).pack(side="right", padx=12)
 
         for var in (self.v_repeat, self.v_start_delay, self.v_move_duration, self.v_default_delay,
-                    self.v_minimize, self.v_record_timing, self.v_bring_to_front):
+                    self.v_type_delay, self.v_minimize, self.v_record_timing,
+                    self.v_record_keyboard, self.v_bring_to_front):
             var.trace_add("write", lambda *_: self._save())
 
     def set_status(self, text):
@@ -709,7 +913,9 @@ class ClickerApp:
             "start_delay": num(self.v_start_delay, float, "start_delay"),
             "move_duration": num(self.v_move_duration, float, "move_duration"),
             "default_delay": num(self.v_default_delay, float, "default_delay"),
+            "type_delay": num(self.v_type_delay, float, "type_delay"),
             "record_timing": bool(self.v_record_timing.get()),
+            "record_keyboard": bool(self.v_record_keyboard.get()),
             "minimize_on_play": bool(self.v_minimize.get()),
             "bring_to_front": bool(self.v_bring_to_front.get()),
         }
@@ -721,7 +927,9 @@ class ClickerApp:
             self.v_start_delay.set(str(s["start_delay"]))
             self.v_move_duration.set(str(s["move_duration"]))
             self.v_default_delay.set(str(s["default_delay"]))
+            self.v_type_delay.set(str(s["type_delay"]))
             self.v_record_timing.set(bool(s["record_timing"]))
+            self.v_record_keyboard.set(bool(s["record_keyboard"]))
             self.v_minimize.set(bool(s["minimize_on_play"]))
             self.v_bring_to_front.set(bool(s["bring_to_front"]))
         finally:
@@ -803,7 +1011,8 @@ class ClickerApp:
         old_program = self.program
         self._set_program(window_info(hwnd), hwnd)
         self.set_status(f"Programm gesetzt: {describe_program(self.program)}")
-        screen_steps = [i for i, ev in enumerate(self.events) if not ev["relative"]]
+        screen_steps = [i for i, ev in enumerate(self.events)
+                        if ev["type"] == "click" and not ev["relative"]]
         if screen_steps and old_program is None and messagebox.askyesno(
                 "Schritte umrechnen",
                 f"Die {len(screen_steps)} vorhandenen Schritt(e) mit Bildschirmposition in Positionen "
@@ -853,7 +1062,7 @@ class ClickerApp:
             return False
         for i in indices:
             ev = self.events[i]
-            if ev["relative"] == to_relative:
+            if ev["type"] != "click" or ev["relative"] == to_relative:
                 continue
             convert = screen_to_rel if to_relative else rel_to_screen
             ev["x"], ev["y"] = convert(hwnd, ev["x"], ev["y"])
@@ -862,7 +1071,7 @@ class ClickerApp:
         return True
 
     def toggle_relative_selected(self):
-        sel = self.selected_indices()
+        sel = [i for i in self.selected_indices() if self.events[i]["type"] == "click"]
         if not sel:
             return
         if not self.program:
@@ -913,10 +1122,13 @@ class ClickerApp:
         self._playing_iid = None
         self.tree.delete(*self.tree.get_children())
         for i, ev in enumerate(self.events):
+            if ev["type"] == "click":
+                where = ("Fenster" if ev["relative"] else "Bildschirm", ev["x"], ev["y"])
+            else:
+                where = ("", "", "")
             self.tree.insert("", "end", iid=str(i), tags=() if ev["enabled"] else ("disabled",), values=(
-                i + 1, "✓" if ev["enabled"] else "", ev["label"],
-                "Fenster" if ev["relative"] else "Bildschirm", ev["x"], ev["y"],
-                BUTTON_LABELS[ev["button"]], ev["clicks"], f"{ev['delay']:.2f}"))
+                i + 1, "✓" if ev["enabled"] else "", STEP_TYPES[ev["type"]], ev["label"],
+                *where, action_text(ev), f"{ev['delay']:.2f}"))
         if select:
             iids = [str(i) for i in select if 0 <= i < len(self.events)]
             if iids:
@@ -953,10 +1165,11 @@ class ClickerApp:
                                            delay=self.get_settings()["default_delay"]))
         self.set_status(f"Schritt {idx + 1} bei ({x}, {y}) {'im Fenster' if relative else 'auf dem Bildschirm'} hinzugefügt.")
 
-    def add_manual(self):
+    def add_manual(self, step_type="click"):
         sx, sy = mouse.Controller().position
         x, y, relative = self._point_for_step(sx, sy, root_window_at(sx, sy))
-        dlg = EventDialog(self, make_event(label=self._next_label(), x=x, y=y, relative=relative,
+        dlg = EventDialog(self, make_event(label=self._next_label(), type=step_type,
+                                           x=x, y=y, relative=relative,
                                            delay=self.get_settings()["default_delay"]),
                           title="Schritt hinzufügen")
         if dlg.result:
@@ -1021,6 +1234,8 @@ class ClickerApp:
         if not sel:
             return
         ev = self.events[sel[0]]
+        if ev["type"] != "click":
+            return
         xy = (ev["x"], ev["y"])
         if ev["relative"]:
             xy = self.convert_point(*xy, to_relative=False)
@@ -1039,13 +1254,15 @@ class ClickerApp:
         col = self.tree.identify_column(e.x)
         name = self.tree.column(col, "id")
         idx = int(iid)
+        is_click = self.events[idx]["type"] == "click"
         if name == "enabled":
             self.events[idx]["enabled"] = not self.events[idx]["enabled"]
             self._changed(select=[idx])
-        elif name == "coords":
+        elif name == "coords" and is_click:
             self.tree.selection_set(iid)
             self.toggle_relative_selected()
-        elif name == "idx":
+        elif name in ("idx", "type") or (name in ("coords", "x", "y") and not is_click):
+            self.tree.selection_set(iid)
             self.edit_selected()
         else:
             self._start_inline_edit(idx, col, name)
@@ -1054,7 +1271,7 @@ class ClickerApp:
     def _edit_selected_label(self):
         sel = self.selected_indices()
         if sel:
-            self._start_inline_edit(sel[0], "#3", "label")
+            self._start_inline_edit(sel[0], "label", "label")
 
     def _start_inline_edit(self, idx, col, name):
         self._commit_editor()
@@ -1065,11 +1282,17 @@ class ClickerApp:
         if not bbox:
             return
         x, y, w, h = bbox
-        current = self.events[idx][name]
+        ev = self.events[idx]
+        if name != "action":
+            current = ev[name]
+        elif ev["type"] == "text":
+            current = ev["text"]
+        else:
+            current = format_keys(ev["keys"])
 
-        if name == "button":
-            widget = ttk.Combobox(self.tree, values=list(BUTTON_LABELS.values()), state="readonly")
-            widget.set(BUTTON_LABELS[current])
+        if name == "action" and ev["type"] == "click":
+            widget = ttk.Combobox(self.tree, values=list(CLICK_ACTIONS), state="readonly")
+            widget.set(click_action(ev["button"], ev["clicks"]))
             widget.bind("<<ComboboxSelected>>", lambda e: self._commit_editor())
         else:
             widget = ttk.Entry(self.tree)
@@ -1090,12 +1313,27 @@ class ClickerApp:
         value = widget.get()
         self._close_editor()
         try:
-            self.events[idx][name] = coerce_field(name, value)
-        except (ValueError, IndexError) as exc:
+            self._apply_cell(self.events[idx], name, value)
+        except (ValueError, IndexError, KeyError) as exc:
             self.set_status(f"Ungültiger Wert ({name}): {exc}")
             return
         self._changed(select=[idx])
         self.tree.focus_set()
+
+    @staticmethod
+    def _apply_cell(ev, name, value):
+        if name != "action":
+            ev[name] = coerce_field(name, value)
+        elif ev["type"] == "click":
+            ev["button"], ev["clicks"] = CLICK_ACTIONS[value]
+        elif ev["type"] == "text":
+            if not value:
+                raise ValueError("Text darf nicht leer sein")
+            ev["text"] = value
+        else:
+            if not value.strip():
+                raise ValueError("Keine Taste angegeben")
+            ev["keys"] = parse_keys(value)
 
     def _close_editor(self):
         if self._editor:
@@ -1141,11 +1379,14 @@ class ClickerApp:
         if self.playing:
             return
         self._start_recording("multi")
-        self.set_status("Klicks werden aufgenommen... klicke in deinem Programm. Esc oder 'Aufnahme stoppen' zum Beenden.")
+        what = "Klicks und Tastatur" if self._rec_keyboard else "Klicks"
+        self.set_status(f"{what} werden aufgenommen... Esc oder 'Aufnahme stoppen' zum Beenden.")
 
     def _start_recording(self, mode):
         self.recording = mode
         self.last_click_time = None
+        self._rec_text = None
+        self._rec_keyboard = mode == "multi" and self.get_settings()["record_keyboard"]
         if mode == "multi":
             self.rec_multi_btn.config(text="■ Aufnahme stoppen")
         else:
@@ -1170,11 +1411,11 @@ class ClickerApp:
         self.play_btn.config(state="normal")
         self.set_status("Aufnahme gestoppt.")
 
-    def _on_global_click(self, x, y, button, pressed):
+    def _on_global_click(self, x, y, button, pressed, injected=False):
         # Runs in the listener thread. The window under the click is looked up
         # right away (before it can close), then everything is handed over to
         # the Tk thread.
-        if pressed:
+        if pressed and not injected:
             x, y = int(x), int(y)
             self.queue.put(("click", x, y, button, time.perf_counter(), root_window_at(x, y)))
 
@@ -1188,19 +1429,14 @@ class ClickerApp:
         name = next((n for n, b in BUTTONS.items() if b == button), None)
         if name is None:
             return
-        settings = self.get_settings()
-        if settings["record_timing"] and self.last_click_time is not None:
-            delay = t - self.last_click_time
-        else:
-            delay = settings["default_delay"]
-        self.last_click_time = t
+        delay = self._recorded_delay(t)
         x, y, relative = self._point_for_step(sx, sy, root_hwnd)
 
         # A fast second click at the same spot becomes a double-click.
         sel = self.selected_indices()
         if sel and self.recording == "multi" and delay < 0.4:
             prev = self.events[sel[-1]]
-            if (prev["button"] == name and prev["clicks"] < 3 and prev["relative"] == relative
+            if (prev["type"] == "click" and prev["button"] == name and prev["clicks"] < 3 and prev["relative"] == relative
                     and abs(prev["x"] - x) <= 4 and abs(prev["y"] - y) <= 4):
                 prev["clicks"] += 1
                 self._changed(select=[sel[-1]])
@@ -1214,14 +1450,76 @@ class ClickerApp:
             self.stop_recording()
         self.set_status(msg)
 
+    def _recorded_delay(self, t):
+        """Wait time for a newly recorded step at time t."""
+        settings = self.get_settings()
+        if settings["record_timing"] and self.last_click_time is not None:
+            delay = t - self.last_click_time
+        else:
+            delay = settings["default_delay"]
+        self.last_click_time = t
+        return delay
+
+    def _handle_recorded_key(self, name, char, held, t):
+        if self.recording != "multi":
+            return
+        command_mods = held & {"ctrl", "alt", "cmd"}
+        altgr = {"ctrl", "alt"} <= held      # AltGr arrives as Ctrl+Alt (e.g. @, €, {)
+        if name == "space" and not command_mods:
+            char = " "
+        is_char = bool(char) and char.isprintable() and (not command_mods or altgr)
+
+        # Typed characters (and Backspace) extend the text step being recorded.
+        sel = self.selected_indices()
+        text_ev = self._rec_text if sel and self.events[sel[-1]] is self._rec_text else None
+        if text_ev and (is_char or (name == "backspace" and not held)):
+            self.last_click_time = t
+            if is_char:
+                text_ev["text"] += char
+            else:
+                text_ev["text"] = text_ev["text"][:-1]
+                if not text_ev["text"]:
+                    del self.events[sel[-1]]
+                    self._rec_text = None
+                    self._changed(select=[sel[-1] - 1])
+                    return
+            self._changed(select=[sel[-1]])
+            self.set_status(f"Text: {action_text(text_ev)}")
+            return
+
+        delay = self._recorded_delay(t)
+        if is_char:
+            ev = make_event(label=self._next_label(), type="text", text=char, delay=delay)
+            self.insert_event(ev)
+            self._rec_text = ev
+            self.set_status(f"Text: {action_text(ev)}")
+            return
+        keys = "+".join([m for m in MODIFIERS if m in held] + [name])
+        idx = self.insert_event(make_event(label=self._next_label(), type="key", keys=keys, delay=delay))
+        self.set_status(f"Schritt {idx + 1} aufgenommen: Taste {format_keys(keys)}.")
+
     # ------------------------------------------------------------ hotkeys --
-    def _on_global_key(self, key):
-        if key == keyboard.Key.esc:
+    def _on_global_key(self, key, injected=False):
+        # Runs in the listener thread. Keys sent by the replay are ignored.
+        if injected or key is None:
+            return
+        name = recorded_key_name(key)
+        if name in MODIFIERS:
+            self._held.add(name)
+        elif key == keyboard.Key.esc:
             self.queue.put(("stop",))
         elif key == keyboard.Key.f9:
             self.queue.put(("play",))
         elif key == keyboard.Key.f8:
             self.queue.put(("add_pos",))
+        elif (name and self.recording == "multi" and self._rec_keyboard
+              and window_pid(_user32.GetForegroundWindow()) != os.getpid()):
+            self.queue.put(("key", name, getattr(key, "char", None), frozenset(self._held),
+                            time.perf_counter()))
+
+    def _on_global_key_release(self, key, injected=False):
+        if not injected and key is not None:
+            self._held.discard(recorded_key_name(key))
 
     def _poll_queue(self):
         try:
@@ -1230,6 +1528,8 @@ class ClickerApp:
                 kind = msg[0]
                 if kind == "click":
                     self._handle_recorded_click(*msg[1:])
+                elif kind == "key":
+                    self._handle_recorded_key(*msg[1:])
                 elif kind == "stop":
                     if self.recording:
                         self.stop_recording()
@@ -1287,6 +1587,7 @@ class ClickerApp:
 
     def _play_worker(self, steps, settings, program, hwnd):
         ctrl = mouse.Controller()
+        kb = keyboard.Controller()
         stop = self.stop_event
         loops_done = 0
         try:
@@ -1307,6 +1608,25 @@ class ClickerApp:
                     self.queue.put(("progress", idx, loops_done + 1, repeat, n, len(steps)))
                     if stop.wait(ev["delay"]):
                         return
+                    if ev["type"] != "click":
+                        if program:
+                            hwnd = find_window(program, hwnd)
+                            if not hwnd:
+                                self._play_error = "Gestoppt: Das Programmfenster wurde geschlossen."
+                                return
+                        if not self._keyboard_target_ok(program, hwnd):
+                            self._play_error = (
+                                "Gestoppt: Das Programmfenster ließ sich nicht in den Vordergrund holen."
+                                if program else
+                                "Gestoppt: Die Tastatureingabe würde im Klicker landen "
+                                "(Programm wählen oder 'Beim Abspielen minimieren' einschalten).")
+                            return
+                        if ev["type"] == "text":
+                            if not self._type_text(kb, ev["text"], settings["type_delay"]):
+                                return
+                        else:
+                            self._press_keys(kb, ev["keys"])
+                        continue
                     x, y = ev["x"], ev["y"]
                     if ev["relative"]:
                         # Look the window up again before every step, so moving
@@ -1345,6 +1665,43 @@ class ClickerApp:
             bring_to_front(hwnd)
             time.sleep(0.2)
         return False
+
+    def _keyboard_target_ok(self, program, hwnd):
+        """Make sure key presses go to the program (or at least not to the Clicker)."""
+        for _ in range(2):
+            fg = _user32.GetForegroundWindow()
+            if fg and window_pid(fg) != os.getpid() and (not program or belongs_to_program(fg, program)):
+                return True
+            if not hwnd:
+                return False
+            bring_to_front(hwnd)
+            time.sleep(0.2)
+        return False
+
+    def _type_text(self, kb, text, delay):
+        """Type text character by character. Returns False if playback was stopped."""
+        for char in text:
+            if self.stop_event.is_set():
+                return False
+            kb.type(char)
+            if delay > 0 and self.stop_event.wait(delay):
+                return False
+        return True
+
+    @staticmethod
+    def _press_keys(kb, keys):
+        """Press a combo like 'ctrl+shift+s': modifiers down, key, all up again."""
+        if not keys:
+            return
+        pressed = []
+        try:
+            for name in keys.split("+"):
+                key = key_object(name)
+                kb.press(key)
+                pressed.append(key)
+        finally:
+            for key in reversed(pressed):
+                kb.release(key)
 
     def _move(self, ctrl, x, y, duration):
         """Glide the mouse to (x, y). Returns False if playback was stopped."""

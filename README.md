@@ -1,7 +1,15 @@
 # Maus-Klicker
 
-Mausklick-Abläufe aufnehmen, bearbeiten und abspielen, um ein anderes Programm
-automatisch zu steuern (Windows).
+Maus- und Tastatur-Abläufe aufnehmen, bearbeiten und abspielen, um ein anderes
+Programm automatisch zu steuern (Windows).
+
+Ein Schritt im Ablauf ist einer von drei Typen:
+
+| Typ | Was passiert |
+|---|---|
+| **Klick** | Maus fährt zu einer Position und klickt (links/rechts/Mitte, 1–3 Klicks) |
+| **Text** | Ein Text wird Zeichen für Zeichen getippt |
+| **Taste** | Eine Taste oder Tastenkombination wird gedrückt, z. B. `Enter`, `Strg+S`, `Alt+F4` |
 
 ## Installation
 
@@ -28,9 +36,9 @@ anderen Bildschirm liegt (auch eine andere Anzeigeskalierung wird ausgeglichen).
 - Das Fenster wird über den Prozessnamen gefunden (z. B. `notepad.exe`),
   bevorzugt mit gleicher Fensterklasse und gleichem Titel. Es funktioniert
   also auch nach einem Neustart des Programms.
-- Die Spalte **Koordinaten** zeigt pro Schritt `Fenster` oder `Bildschirm`.
-  Doppelklick darauf (oder **Fenster / Bildschirm**) rechnet die markierten
-  Schritte um.
+- Die Spalte **Koordinaten** zeigt pro Klick-Schritt `Fenster` oder
+  `Bildschirm`. Doppelklick darauf (oder **Fenster / Bildschirm**) rechnet die
+  markierten Schritte um.
 - Wählst du ein Programm für einen Ablauf, der schon Schritte mit
   Bildschirmposition hat, wird angeboten, sie umzurechnen.
 - **Beim Abspielen in den Vordergrund** holt das Programmfenster vor dem
@@ -38,17 +46,37 @@ anderen Bildschirm liegt (auch eine andere Anzeigeskalierung wird ausgeglichen).
 - Der Anker ist die obere linke Ecke: Verschieben geht immer, *Größe ändern*
   nur, wenn die angeklickten Elemente dabei an ihrer Stelle bleiben.
 
+## Tastatur
+
+- **Aufnehmen:** Mit *Tastatur mitaufnehmen* (Standard: an) zeichnet
+  **●● Mehrere aufnehmen** auch die Tastatur auf. Getippte Zeichen werden zu
+  einem Text-Schritt zusammengefasst (Rücktaste korrigiert ihn),
+  Sondertasten und Kombinationen mit Strg/Alt/Win werden zu Tasten-Schritten.
+  Eingaben im Klicker-Fenster selbst sowie `Esc`, `F8` und `F9` werden nicht
+  aufgenommen.
+- **Von Hand hinzufügen:** **+ Text...** oder **+ Taste...**. Tasten werden
+  mit `+` verbunden. Deutsche und englische Namen gehen beide: `Strg`/`Ctrl`,
+  `Umschalt`/`Shift`, `Alt`, `Win`, `Enter`, `Tab`, `Esc`, `Entf`, `Rücktaste`,
+  `Leertaste`, `Pos1`, `Ende`, `Bild↑`/`page_up`, Pfeiltasten (`↑` oder `up`),
+  `F1`–`F24`, Buchstaben und Ziffern. Für die Plus-Taste `Plus` schreiben.
+- **Abspielen:** Tastatureingaben gehen an das aktive Fenster. Ist ein
+  Programm gewählt, wird vor jedem Tastatur-Schritt geprüft, dass es im
+  Vordergrund ist (sonst wird es nach vorne geholt). Ohne Programm wird
+  zumindest sichergestellt, dass nie in den Klicker selbst getippt wird.
+  *Tippverzögerung* ist die Pause zwischen zwei getippten Zeichen.
+
 ## Bedienung
 
 | Aktion | So geht's |
 |---|---|
 | Zu steuerndes Programm wählen | **🎯 Programm wählen**, dann in dessen Fenster klicken |
 | Einen Klick aufnehmen | **● Klick aufnehmen**, dann im Programm klicken |
-| Mehrere Klicks aufnehmen | **●● Mehrere aufnehmen**, durch das Programm klicken, dann **Esc** oder **■ Aufnahme stoppen** |
+| Mehrere Klicks + Tastatur aufnehmen | **●● Mehrere aufnehmen**, im Programm klicken und tippen, dann **Esc** oder **■ Aufnahme stoppen** |
 | Position ohne Klick hinzufügen | Maus aufs Ziel und **F8** drücken |
-| Wert bearbeiten | Doppelklick auf die Zelle (Bezeichnung, X, Y, Taste, Klicks, Warten) |
+| Text / Taste hinzufügen | **+ Text...** / **+ Taste...** |
+| Wert bearbeiten | Doppelklick auf die Zelle (Bezeichnung, X, Y, Aktion, Warten) |
 | Umbenennen | Zeile markieren und **F2** drücken |
-| Kompletter Editor (inkl. „Mausposition in 3 s übernehmen") | Doppelklick auf die `#`-Zelle, **Enter** oder **Bearbeiten...** |
+| Kompletter Editor (Typ ändern, „Mausposition in 3 s übernehmen" ...) | Doppelklick auf `#` oder `Typ`, **Enter** oder **Bearbeiten...** |
 | Schritt an-/ausschalten | Doppelklick auf die Zelle `An` oder **Leertaste** |
 | Reihenfolge ändern | Zeilen ziehen, **Strg+↑ / Strg+↓** oder die Pfeil-Buttons |
 | Duplizieren / Löschen | **Strg+D** / **Entf** (Mehrfachauswahl mit Strg/Umschalt) |
@@ -59,26 +87,29 @@ Hinweise:
 - Neue Schritte werden nach der markierten Zeile eingefügt (sonst am Ende).
 - Klicks auf das Klicker-Fenster selbst werden bei der Aufnahme ignoriert, und
   beim Abspielen wird nie auf den Klicker selbst geklickt.
-- Mit *Zeit zwischen Klicks aufnehmen* wird die echte Pause zwischen deinen
-  Klicks als Wartezeit des Schritts gespeichert.
+- Mit *Zeit zwischen Schritten aufnehmen* wird die echte Pause zwischen deinen
+  Eingaben als Wartezeit des Schritts gespeichert.
 - Zwei schnelle Klicks an derselben Stelle werden als ein Doppelklick gespeichert.
 - *Wiederholen* `0` wiederholt endlos, bis du Esc drückst.
 - Läuft das gesteuerte Programm als Administrator, muss auch `clicker.py` als
-  Administrator gestartet werden, sonst blockiert Windows die Klicks.
+  Administrator gestartet werden, sonst blockiert Windows Klicks und Tastatur.
 
 ## Dateiformat
 
-Alles wird nach jeder Änderung automatisch gespeichert:
+Alles wird nach jeder Änderung automatisch gespeichert. Pro Schritt stehen nur
+die Felder in der Datei, die für seinen Typ wichtig sind:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "settings": {
     "repeat": 1,
     "start_delay": 3.0,
     "move_duration": 0.2,
     "default_delay": 0.5,
+    "type_delay": 0.03,
     "record_timing": true,
+    "record_keyboard": true,
     "minimize_on_play": true,
     "bring_to_front": true
   },
@@ -89,7 +120,8 @@ Alles wird nach jeder Änderung automatisch gespeichert:
   },
   "events": [
     {
-      "label": "Menü öffnen",
+      "label": "Ins Textfeld klicken",
+      "type": "click",
       "x": 412,
       "y": 230,
       "relative": true,
@@ -97,16 +129,35 @@ Alles wird nach jeder Änderung automatisch gespeichert:
       "clicks": 1,
       "delay": 0.5,
       "enabled": true
+    },
+    {
+      "label": "Namen eingeben",
+      "type": "text",
+      "text": "Max Mustermann",
+      "delay": 0.5,
+      "enabled": true
+    },
+    {
+      "label": "Speichern",
+      "type": "key",
+      "keys": "ctrl+s",
+      "delay": 0.5,
+      "enabled": true
     }
   ]
 }
 ```
 
-- `delay` ist die Wartezeit in Sekunden, *bevor* die Maus zu diesem Schritt fährt.
-- `button` ist `left`, `right` oder `middle` (in der Oberfläche: links, rechts, Mitte).
+- `delay` ist die Wartezeit in Sekunden *vor* dem Schritt.
+- `button` ist `left`, `right` oder `middle`.
 - `"relative": false`: `x`/`y` sind absolute Bildschirmpixel.
 - `"relative": true`: `x`/`y` sind der Abstand zur Ecke des Fensterinhalts, in
   Pixeln bei 100 % Skalierung (bei 150 % sind 100 also 150 echte Pixel).
+- `keys` verwendet die englischen Tastennamen von pynput (`ctrl`, `shift`,
+  `alt`, `cmd` = Win, `enter`, `page_up`, `f5`, ...), verbunden mit `+`.
 - `"program": null` bedeutet, dass kein Programm gewählt ist. Ältere Dateien
-  ohne diese Felder lassen sich weiterhin öffnen; ihre Schritte sind
-  Bildschirmpositionen.
+  (Version 1 und 2) lassen sich weiterhin öffnen; Schritte ohne `type` sind Klicks.
+
+## Lizenz
+
+[MIT](LICENSE)
