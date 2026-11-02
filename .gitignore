@@ -1,0 +1,6 @@
+# Eigene Abläufe (persönliche Klick-Sequenzen)
+*.json
+*.json.tmp
+
+__pycache__/
+*.pyc
