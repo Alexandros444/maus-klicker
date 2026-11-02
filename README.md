@@ -65,6 +65,21 @@ anderen Bildschirm liegt (auch eine andere Anzeigeskalierung wird ausgeglichen).
   zumindest sichergestellt, dass nie in den Klicker selbst getippt wird.
   *Tippverzögerung* ist die Pause zwischen zwei getippten Zeichen.
 
+## Wartezeiten und Dauer
+
+- **Standard:** Jeder Schritt wartet vorher die **Standard-Wartezeit**
+  (unten bei *Abspielen*).
+- **Eigene Wartezeiten der Schritte verwenden** (Standard: aus): Dann wartet
+  jeder Schritt seine eigene Wartezeit aus der Spalte *Eigene Wartezeit*, z. B.
+  die bei der Aufnahme gemessene Pause. Solange die Option aus ist, stehen die
+  eigenen Werte in Klammern, z. B. `(1.25)` – sie bleiben gespeichert, werden
+  aber nicht benutzt.
+- **Wartezeit = Standard** setzt die eigene Wartezeit der markierten Schritte
+  auf die Standard-Wartezeit (ist nichts markiert, nach Rückfrage für alle).
+- Neben der Schrittzahl steht die **erwartete Dauer** eines Durchlaufs (aktive
+  Schritte: Wartezeiten + Mausbewegung + Tippen, ohne Startverzögerung), bei
+  mehreren Wiederholungen auch die Gesamtdauer.
+
 ## Bedienung
 
 | Aktion | So geht's |
@@ -74,7 +89,7 @@ anderen Bildschirm liegt (auch eine andere Anzeigeskalierung wird ausgeglichen).
 | Mehrere Klicks + Tastatur aufnehmen | **●● Mehrere aufnehmen**, im Programm klicken und tippen, dann **Esc** oder **■ Aufnahme stoppen** |
 | Position ohne Klick hinzufügen | Maus aufs Ziel und **F8** drücken |
 | Text / Taste hinzufügen | **+ Text...** / **+ Taste...** |
-| Wert bearbeiten | Doppelklick auf die Zelle (Bezeichnung, X, Y, Aktion, Warten) |
+| Wert bearbeiten | Doppelklick auf die Zelle (Bezeichnung, X, Y, Aktion, Eigene Wartezeit) |
 | Umbenennen | Zeile markieren und **F2** drücken |
 | Kompletter Editor (Typ ändern, „Mausposition in 3 s übernehmen" ...) | Doppelklick auf `#` oder `Typ`, **Enter** oder **Bearbeiten...** |
 | Schritt an-/ausschalten | Doppelklick auf die Zelle `An` oder **Leertaste** |
@@ -88,7 +103,8 @@ Hinweise:
 - Klicks auf das Klicker-Fenster selbst werden bei der Aufnahme ignoriert, und
   beim Abspielen wird nie auf den Klicker selbst geklickt.
 - Mit *Zeit zwischen Schritten aufnehmen* wird die echte Pause zwischen deinen
-  Eingaben als Wartezeit des Schritts gespeichert.
+  Eingaben als eigene Wartezeit des Schritts gespeichert (wird nur benutzt, wenn
+  *Eigene Wartezeiten der Schritte verwenden* an ist).
 - Zwei schnelle Klicks an derselben Stelle werden als ein Doppelklick gespeichert.
 - *Wiederholen* `0` wiederholt endlos, bis du Esc drückst.
 - Läuft das gesteuerte Programm als Administrator, muss auch `clicker.py` als
@@ -107,6 +123,7 @@ die Felder in der Datei, die für seinen Typ wichtig sind:
     "start_delay": 3.0,
     "move_duration": 0.2,
     "default_delay": 0.5,
+    "use_custom_delays": false,
     "type_delay": 0.03,
     "record_timing": true,
     "record_keyboard": true,
@@ -148,7 +165,8 @@ die Felder in der Datei, die für seinen Typ wichtig sind:
 }
 ```
 
-- `delay` ist die Wartezeit in Sekunden *vor* dem Schritt.
+- `delay` ist die eigene Wartezeit in Sekunden *vor* dem Schritt. Sie gilt nur
+  bei `"use_custom_delays": true`, sonst wartet jeder Schritt `default_delay`.
 - `button` ist `left`, `right` oder `middle`.
 - `"relative": false`: `x`/`y` sind absolute Bildschirmpixel.
 - `"relative": true`: `x`/`y` sind der Abstand zur Ecke des Fensterinhalts, in

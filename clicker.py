@@ -66,7 +66,8 @@ DEFAULT_SETTINGS = {
     "repeat": 1,              # 0 = repeat forever
     "start_delay": 3.0,       # seconds before replay starts
     "move_duration": 0.2,     # seconds for each mouse movement
-    "default_delay": 0.5,     # wait before a step that has no recorded timing
+    "default_delay": 0.5,     # wait before every step (unless custom waits are on)
+    "use_custom_delays": False,  # True = every step waits its own "delay"
     "type_delay": 0.03,       # seconds between typed characters
     "record_timing": True,    # use real time between recorded clicks as delay
     "record_keyboard": True,  # record typing / key combos in "record multiple"
@@ -84,7 +85,7 @@ COLUMNS = (
     ("x", "X", 60, "center"),
     ("y", "Y", 60, "center"),
     ("action", "Aktion", 160, "w"),
-    ("delay", "Warten vorher (s)", 125, "center"),
+    ("delay", "Eigene Wartezeit (s)", 135, "center"),
 )
 
 
@@ -166,6 +167,35 @@ def recorded_key_name(key):
     if char and char.isprintable():
         return "plus" if char == "+" else char
     return None
+
+
+def step_delay(ev, settings):
+    """Seconds to wait before a step."""
+    return ev["delay"] if settings["use_custom_delays"] else settings["default_delay"]
+
+
+def estimate_duration(events, settings):
+    """Rough length of one round in seconds (without the start delay)."""
+    total = 0.0
+    for ev in events:
+        if not ev["enabled"]:
+            continue
+        total += step_delay(ev, settings)
+        if ev["type"] == "click":
+            total += settings["move_duration"]
+        elif ev["type"] == "text":
+            total += len(ev["text"]) * settings["type_delay"]
+    return total
+
+
+def format_duration(seconds):
+    """3.25 -> '3,3 s', 75 -> '1:15 min', 3725 -> '1:02:05 h'"""
+    if seconds < 60:
+        return f"{seconds:.1f} s".replace(".", ",")
+    seconds = round(seconds)
+    if seconds < 3600:
+        return f"{seconds // 60}:{seconds % 60:02d} min"
+    return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d} h"
 
 
 def action_text(ev):
@@ -746,8 +776,8 @@ class ClickerApp:
         # Sizes below are for 100 % display scaling; Tk already scales the
         # fonts, so scale window size, column widths and row height to match.
         s = self.ui_scale = root.winfo_fpixels("1i") / 96
-        root.geometry(f"{round(1060 * s)}x{round(760 * s)}")
-        root.minsize(round(920 * s), round(640 * s))
+        root.geometry(f"{round(1060 * s)}x{round(800 * s)}")
+        root.minsize(round(920 * s), round(680 * s))
 
         style = ttk.Style(root)
         if "vista" in style.theme_names():
@@ -846,6 +876,7 @@ class ClickerApp:
             ("▲ Nach oben", lambda: self.move_selected(-1)),
             ("▼ Nach unten", lambda: self.move_selected(1)),
             (None, None),
+            ("Wartezeit = Standard", self.delays_to_standard),
             ("Fenster / Bildschirm", self.toggle_relative_selected),
             ("Position zeigen", self.show_selected_position),
             ("Alles löschen", self.clear_all),
@@ -858,26 +889,36 @@ class ClickerApp:
                   foreground="#666", justify="left").pack(side="bottom", anchor="w")
 
         # Playback bar
-        play = ttk.LabelFrame(root, text="Abspielen", padding=8)
-        play.pack(fill="x", padx=8)
+        play_box = ttk.LabelFrame(root, text="Abspielen", padding=8)
+        play_box.pack(fill="x", padx=8)
+        play = ttk.Frame(play_box)
+        play.pack(fill="x")
+        waits = ttk.Frame(play_box)
+        waits.pack(fill="x", pady=(6, 0))
 
         self.v_repeat = tk.StringVar(value=str(DEFAULT_SETTINGS["repeat"]))
         self.v_start_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["start_delay"]))
         self.v_move_duration = tk.StringVar(value=str(DEFAULT_SETTINGS["move_duration"]))
         self.v_default_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["default_delay"]))
         self.v_type_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["type_delay"]))
+        self.v_custom_delays = tk.BooleanVar(value=DEFAULT_SETTINGS["use_custom_delays"])
         self.v_minimize = tk.BooleanVar(value=DEFAULT_SETTINGS["minimize_on_play"])
 
-        def spin(text, var, frm, to, inc, width=6):
-            ttk.Label(play, text=text).pack(side="left")
-            ttk.Spinbox(play, textvariable=var, from_=frm, to=to, increment=inc,
+        def spin(parent, text, var, frm, to, inc, width=6):
+            ttk.Label(parent, text=text).pack(side="left")
+            ttk.Spinbox(parent, textvariable=var, from_=frm, to=to, increment=inc,
                         width=width).pack(side="left", padx=(2, 10))
 
-        spin("Wiederholen (0 = ∞)", self.v_repeat, 0, 100000, 1)
-        spin("Startverzögerung (s)", self.v_start_delay, 0, 60, 0.5)
-        spin("Bewegungszeit (s)", self.v_move_duration, 0, 5, 0.05)
-        spin("Standard-Wartezeit (s)", self.v_default_delay, 0, 60, 0.1)
-        spin("Tippverzögerung (s)", self.v_type_delay, 0, 2, 0.01)
+        spin(play, "Wiederholen (0 = ∞)", self.v_repeat, 0, 100000, 1)
+        spin(play, "Startverzögerung (s)", self.v_start_delay, 0, 60, 0.5)
+        spin(play, "Bewegungszeit (s)", self.v_move_duration, 0, 5, 0.05)
+        spin(play, "Tippverzögerung (s)", self.v_type_delay, 0, 2, 0.01)
+        ttk.Checkbutton(play, text="Beim Abspielen minimieren", variable=self.v_minimize).pack(side="left")
+
+        spin(waits, "Standard-Wartezeit (s)", self.v_default_delay, 0, 60, 0.1)
+        ttk.Checkbutton(waits, text="Eigene Wartezeiten der Schritte verwenden "
+                                    "(aus = jeder Schritt wartet die Standard-Wartezeit)",
+                        variable=self.v_custom_delays).pack(side="left")
 
         bottom = ttk.Frame(root, padding=8)
         bottom.pack(fill="x")
@@ -885,20 +926,42 @@ class ClickerApp:
         self.play_btn.pack(side="left")
         self.stop_btn = ttk.Button(bottom, text="■ Stopp (Esc)", command=self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=4)
-        self.status_var = tk.StringVar(value="Bereit.")
-        ttk.Label(bottom, textvariable=self.status_var).pack(side="left", padx=10)
         self.count_var = tk.StringVar()
         ttk.Label(bottom, textvariable=self.count_var, foreground="#555").pack(side="right")
-        ttk.Checkbutton(bottom, text="Beim Abspielen minimieren",
-                        variable=self.v_minimize).pack(side="right", padx=12)
+        self.status_var = tk.StringVar(value="Bereit.")
+        ttk.Label(bottom, textvariable=self.status_var).pack(side="left", padx=10)
 
         for var in (self.v_repeat, self.v_start_delay, self.v_move_duration, self.v_default_delay,
                     self.v_type_delay, self.v_minimize, self.v_record_timing,
                     self.v_record_keyboard, self.v_bring_to_front):
-            var.trace_add("write", lambda *_: self._save())
+            var.trace_add("write", lambda *_: self._settings_changed())
+        # Switching custom waits on/off changes how the wait column is shown.
+        self.v_custom_delays.trace_add("write", lambda *_: self._settings_changed(refresh=True))
 
     def set_status(self, text):
         self.status_var.set(text)
+
+    def _settings_changed(self, refresh=False):
+        if self._loading:
+            return
+        if refresh:
+            self._refresh(select=self.selected_indices())
+        else:
+            self._update_summary()
+        self._save()
+
+    def _update_summary(self):
+        """Step count and expected duration next to the play button."""
+        n = len(self.events)
+        settings = self.get_settings()
+        one_round = estimate_duration(self.events, settings)
+        text = f"{n} Schritt{'e' if n != 1 else ''}  ·  Dauer ≈ {format_duration(one_round)}"
+        repeat = settings["repeat"]
+        if repeat == 0:
+            text += " pro Durchlauf (endlos)"
+        elif repeat > 1:
+            text += f" × {repeat} = {format_duration(one_round * repeat)}"
+        self.count_var.set(text)
 
     # ------------------------------------------------------- settings/file --
     def get_settings(self):
@@ -914,6 +977,7 @@ class ClickerApp:
             "move_duration": num(self.v_move_duration, float, "move_duration"),
             "default_delay": num(self.v_default_delay, float, "default_delay"),
             "type_delay": num(self.v_type_delay, float, "type_delay"),
+            "use_custom_delays": bool(self.v_custom_delays.get()),
             "record_timing": bool(self.v_record_timing.get()),
             "record_keyboard": bool(self.v_record_keyboard.get()),
             "minimize_on_play": bool(self.v_minimize.get()),
@@ -928,6 +992,7 @@ class ClickerApp:
             self.v_move_duration.set(str(s["move_duration"]))
             self.v_default_delay.set(str(s["default_delay"]))
             self.v_type_delay.set(str(s["type_delay"]))
+            self.v_custom_delays.set(bool(s["use_custom_delays"]))
             self.v_record_timing.set(bool(s["record_timing"]))
             self.v_record_keyboard.set(bool(s["record_keyboard"]))
             self.v_minimize.set(bool(s["minimize_on_play"]))
@@ -1121,6 +1186,8 @@ class ClickerApp:
         self._close_editor()
         self._playing_iid = None
         self.tree.delete(*self.tree.get_children())
+        # Custom waits that are switched off are shown in brackets (not used).
+        delay_fmt = "{:.2f}" if self.v_custom_delays.get() else "({:.2f})"
         for i, ev in enumerate(self.events):
             if ev["type"] == "click":
                 where = ("Fenster" if ev["relative"] else "Bildschirm", ev["x"], ev["y"])
@@ -1128,15 +1195,14 @@ class ClickerApp:
                 where = ("", "", "")
             self.tree.insert("", "end", iid=str(i), tags=() if ev["enabled"] else ("disabled",), values=(
                 i + 1, "✓" if ev["enabled"] else "", STEP_TYPES[ev["type"]], ev["label"],
-                *where, action_text(ev), f"{ev['delay']:.2f}"))
+                *where, action_text(ev), delay_fmt.format(ev["delay"])))
         if select:
             iids = [str(i) for i in select if 0 <= i < len(self.events)]
             if iids:
                 self.tree.selection_set(iids)
                 self.tree.focus(iids[-1])
                 self.tree.see(iids[-1])
-        n = len(self.events)
-        self.count_var.set(f"{n} Schritt{'e' if n != 1 else ''}")
+        self._update_summary()
 
     def _changed(self, select=None):
         self._refresh(select)
@@ -1223,6 +1289,22 @@ class ClickerApp:
             j = i + direction
             self.events[i], self.events[j] = self.events[j], self.events[i]
         self._changed(select=[i + direction for i in sel])
+
+    def delays_to_standard(self):
+        """Set the custom wait of the selected steps (or all) to the standard wait."""
+        sel = self.selected_indices()
+        if not sel:
+            if not self.events or not messagebox.askyesno(
+                    "Wartezeiten zurücksetzen",
+                    "Kein Schritt markiert. Die eigene Wartezeit aller Schritte auf die "
+                    "Standard-Wartezeit setzen?"):
+                return
+            sel = list(range(len(self.events)))
+        std = self.get_settings()["default_delay"]
+        for i in sel:
+            self.events[i]["delay"] = std
+        self._changed(select=sel)
+        self.set_status(f"Wartezeit von {len(sel)} Schritt(en) auf {std:.2f} s gesetzt.")
 
     def clear_all(self):
         if self.events and messagebox.askyesno("Alles löschen", "Alle Schritte dieses Ablaufs löschen?"):
@@ -1319,6 +1401,8 @@ class ClickerApp:
             return
         self._changed(select=[idx])
         self.tree.focus_set()
+        if name == "delay" and not self.v_custom_delays.get():
+            self.set_status("Hinweis: Eigene Wartezeiten sind aus - eingeschaltet unter Abspielen.")
 
     @staticmethod
     def _apply_cell(ev, name, value):
@@ -1606,7 +1690,7 @@ class ClickerApp:
             while repeat == 0 or loops_done < repeat:
                 for n, (idx, ev) in enumerate(steps, 1):
                     self.queue.put(("progress", idx, loops_done + 1, repeat, n, len(steps)))
-                    if stop.wait(ev["delay"]):
+                    if stop.wait(step_delay(ev, settings)):
                         return
                     if ev["type"] != "click":
                         if program:
