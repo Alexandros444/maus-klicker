@@ -2,5 +2,10 @@
 *.json
 *.json.tmp
 
+# PyInstaller
+build/
+dist/
+*.spec
+
 __pycache__/
 *.pyc

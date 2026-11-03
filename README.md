@@ -21,6 +21,16 @@ python clicker.py                 # verwendet sequence.json neben dem Skript
 python clicker.py meine_aufgabe.json    # oder eine andere Ablauf-Datei
 ```
 
+### Als .exe bauen
+
+```
+pip install pyinstaller
+python -m PyInstaller --onefile --windowed --name Maus-Klicker --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 clicker.py
+```
+
+Die fertige `dist\Maus-Klicker.exe` braucht kein installiertes Python. Sie
+speichert ihre `sequence.json` im selben Ordner wie die exe.
+
 ## Programmfenster verfolgen
 
 Klicke auf **🎯 Programm wählen** und dann auf das Programm, das gesteuert

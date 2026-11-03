@@ -41,7 +41,12 @@ except Exception:
 
 from pynput import keyboard, mouse  # noqa: E402  (must come after DPI setup)
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# As a PyInstaller exe, __file__ points into a temporary folder that is deleted
+# on exit, so keep sequence.json next to the exe instead.
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FILE = os.path.join(APP_DIR, "sequence.json")
 FILE_VERSION = 3
 
