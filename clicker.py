@@ -18,6 +18,7 @@ Globale Tastenkürzel (funktionieren auch, wenn ein anderes Programm aktiv ist):
     Esc  Abspielen / Aufnahme stoppen
 """
 
+import collections
 import ctypes
 import json
 import os
@@ -77,6 +78,7 @@ DEFAULT_SETTINGS = {
     "record_timing": True,    # use real time between recorded clicks as delay
     "record_keyboard": True,  # record typing / key combos in "record multiple"
     "minimize_on_play": True,
+    "abort_on_input": True,   # stop replay when the user moves the mouse / types
     "bring_to_front": True,   # activate the program window before replay
 }
 
@@ -756,6 +758,10 @@ class ClickerApp:
         self.play_thread = None
         self._play_error = None
         self._playing_iid = None
+        self._guard_armed = False       # replay is running and watching for user input
+        self._guard_listener = None
+        self._abort_reason = None       # what user input aborted the replay
+        self._own_moves = collections.deque(maxlen=64)   # positions the replay moved to
 
         self._editor = None             # inline cell editor widget
         self._drag_from = None
@@ -908,6 +914,7 @@ class ClickerApp:
         self.v_type_delay = tk.StringVar(value=str(DEFAULT_SETTINGS["type_delay"]))
         self.v_custom_delays = tk.BooleanVar(value=DEFAULT_SETTINGS["use_custom_delays"])
         self.v_minimize = tk.BooleanVar(value=DEFAULT_SETTINGS["minimize_on_play"])
+        self.v_abort_on_input = tk.BooleanVar(value=DEFAULT_SETTINGS["abort_on_input"])
 
         def spin(parent, text, var, frm, to, inc, width=6):
             ttk.Label(parent, text=text).pack(side="left")
@@ -919,6 +926,8 @@ class ClickerApp:
         spin(play, "Bewegungszeit (s)", self.v_move_duration, 0, 5, 0.05)
         spin(play, "Tippverzögerung (s)", self.v_type_delay, 0, 2, 0.01)
         ttk.Checkbutton(play, text="Beim Abspielen minimieren", variable=self.v_minimize).pack(side="left")
+        ttk.Checkbutton(play, text="Bei Eingabe abbrechen",
+                        variable=self.v_abort_on_input).pack(side="left", padx=(10, 0))
 
         spin(waits, "Standard-Wartezeit (s)", self.v_default_delay, 0, 60, 0.1)
         ttk.Checkbutton(waits, text="Eigene Wartezeiten der Schritte verwenden "
@@ -937,7 +946,7 @@ class ClickerApp:
         ttk.Label(bottom, textvariable=self.status_var).pack(side="left", padx=10)
 
         for var in (self.v_repeat, self.v_start_delay, self.v_move_duration, self.v_default_delay,
-                    self.v_type_delay, self.v_minimize, self.v_record_timing,
+                    self.v_type_delay, self.v_minimize, self.v_abort_on_input, self.v_record_timing,
                     self.v_record_keyboard, self.v_bring_to_front):
             var.trace_add("write", lambda *_: self._settings_changed())
         # Switching custom waits on/off changes how the wait column is shown.
@@ -986,6 +995,7 @@ class ClickerApp:
             "record_timing": bool(self.v_record_timing.get()),
             "record_keyboard": bool(self.v_record_keyboard.get()),
             "minimize_on_play": bool(self.v_minimize.get()),
+            "abort_on_input": bool(self.v_abort_on_input.get()),
             "bring_to_front": bool(self.v_bring_to_front.get()),
         }
 
@@ -1001,6 +1011,7 @@ class ClickerApp:
             self.v_record_timing.set(bool(s["record_timing"]))
             self.v_record_keyboard.set(bool(s["record_keyboard"]))
             self.v_minimize.set(bool(s["minimize_on_play"]))
+            self.v_abort_on_input.set(bool(s["abort_on_input"]))
             self.v_bring_to_front.set(bool(s["bring_to_front"]))
         finally:
             self._loading = False
@@ -1593,6 +1604,8 @@ class ClickerApp:
         if injected or key is None:
             return
         name = recorded_key_name(key)
+        if self._guard_armed and key != keyboard.Key.esc:
+            self._user_input(f"Tastendruck ({format_keys(name) if name else 'Taste'})")
         if name in MODIFIERS:
             self._held.add(name)
         elif key == keyboard.Key.esc:
@@ -1666,6 +1679,14 @@ class ClickerApp:
         self.pick_btn.config(state="disabled")
         if settings["minimize_on_play"]:
             self.root.iconify()
+        self._abort_reason = None
+        self._guard_armed = False
+        self._own_moves.clear()
+        if settings["abort_on_input"]:
+            self._guard_listener = mouse.Listener(on_move=self._guard_move, on_click=self._guard_click,
+                                                  on_scroll=self._guard_scroll)
+            self._guard_listener.daemon = True
+            self._guard_listener.start()
         program = dict(self.program) if self.program else None
         self.play_thread = threading.Thread(target=self._play_worker,
                                             args=(steps, settings, program, self._hwnd), daemon=True)
@@ -1673,6 +1694,42 @@ class ClickerApp:
 
     def stop(self):
         self.stop_event.set()
+
+    # The guard runs in listener threads while the replay is armed (after the
+    # start countdown, so you can still switch windows then). Input sent by
+    # the replay itself is flagged "injected" by Windows; cursor positions the
+    # replay set are remembered too, in case a move event isn't flagged.
+    def _user_input(self, reason):
+        if self._guard_armed and not self.stop_event.is_set():
+            self._abort_reason = reason
+            self.stop_event.set()
+
+    def _guard_move(self, x, y, injected=False):
+        if not injected and self._guard_armed and not any(
+                abs(x - px) <= 2 and abs(y - py) <= 2 for px, py in list(self._own_moves)):
+            self._user_input(f"Mausbewegung bei ({int(x)}, {int(y)})")
+
+    def _guard_click(self, x, y, button, pressed, injected=False):
+        if not injected and pressed:
+            self._user_input(f"Mausklick ({CLICK_LABELS.get(button.name, button.name)})")
+
+    def _guard_scroll(self, x, y, dx, dy, injected=False):
+        if not injected:
+            self._user_input("Mausrad")
+
+    def _set_cursor(self, ctrl, x, y):
+        self._own_moves.append((x, y))
+        ctrl.position = (x, y)
+        # Windows may clamp the position (e.g. at the screen edge).
+        self._own_moves.append(tuple(int(v) for v in ctrl.position))
+
+    def _guard_poll(self):
+        """Second check besides the listener: every 50 ms, compare where the
+        cursor is with where the replay put it."""
+        ctrl = mouse.Controller()
+        while self._guard_armed and not self.stop_event.wait(0.05):
+            x, y = ctrl.position
+            self._guard_move(x, y)
 
     def _play_worker(self, steps, settings, program, hwnd):
         ctrl = mouse.Controller()
@@ -1691,6 +1748,10 @@ class ClickerApp:
                 bring_to_front(hwnd)
                 if stop.wait(0.3):
                     return
+            self._own_moves.append(tuple(int(v) for v in ctrl.position))
+            self._guard_armed = bool(self._guard_listener)
+            if self._guard_armed:
+                threading.Thread(target=self._guard_poll, daemon=True).start()
             repeat = settings["repeat"]
             while repeat == 0 or loops_done < repeat:
                 for n, (idx, ev) in enumerate(steps, 1):
@@ -1795,18 +1856,18 @@ class ClickerApp:
     def _move(self, ctrl, x, y, duration):
         """Glide the mouse to (x, y). Returns False if playback was stopped."""
         if duration <= 0:
-            ctrl.position = (x, y)
+            self._set_cursor(ctrl, x, y)
             return not self.stop_event.is_set()
         sx, sy = ctrl.position
         steps = max(1, int(duration / 0.01))
         for i in range(1, steps + 1):
             t = i / steps
             t = t * t * (3 - 2 * t)  # ease in/out
-            ctrl.position = (round(sx + (x - sx) * t), round(sy + (y - sy) * t))
+            self._set_cursor(ctrl, round(sx + (x - sx) * t), round(sy + (y - sy) * t))
             if self.stop_event.wait(duration / steps):
                 return False
-        ctrl.position = (x, y)
-        return True
+        self._set_cursor(ctrl, x, y)
+        return not self.stop_event.is_set()
 
     def _show_progress(self, idx, loop, repeat, n, total):
         if self._playing_iid and self.tree.exists(self._playing_iid):
@@ -1822,6 +1883,10 @@ class ClickerApp:
 
     def _on_play_done(self, loops_done):
         self.playing = False
+        self._guard_armed = False
+        if self._guard_listener:
+            self._guard_listener.stop()
+            self._guard_listener = None
         self.play_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.rec_single_btn.config(state="normal")
@@ -1832,11 +1897,24 @@ class ClickerApp:
         if self.root.state() == "iconic":
             self.root.deiconify()
         self.root.lift()
-        if self._play_error:
+        if self._abort_reason:
+            msg = (f"Abgebrochen: Benutzereingabe erkannt - {self._abort_reason}. "
+                   f"Abgeschlossene Durchläufe: {loops_done}.")
+            self.set_status(msg)
+            print(f"[Maus-Klicker] {msg}", flush=True)
+            self._show_abort_message(msg)
+        elif self._play_error:
             self.set_status(f"{self._play_error} (abgeschlossene Durchläufe: {loops_done})")
         else:
             stopped = self.stop_event.is_set()
             self.set_status(f"{'Gestoppt' if stopped else 'Fertig'} - abgeschlossene Durchläufe: {loops_done}.")
+
+    def _show_abort_message(self, msg):
+        messagebox.showwarning(
+            "Abspielen abgebrochen",
+            f"{msg}\n\nDas Abspielen wurde zur Sicherheit gestoppt, weil Maus oder Tastatur "
+            "benutzt wurden. Abschalten unter 'Abspielen' → 'Bei Eingabe abbrechen'.",
+            parent=self.root)
 
     # -------------------------------------------------------------- close --
     def _on_close(self):

@@ -75,6 +75,21 @@ anderen Bildschirm liegt (auch eine andere Anzeigeskalierung wird ausgeglichen).
   zumindest sichergestellt, dass nie in den Klicker selbst getippt wird.
   *Tippverzögerung* ist die Pause zwischen zwei getippten Zeichen.
 
+## Sicherheit: Abbruch bei Eingabe
+
+Mit **Bei Eingabe abbrechen** (unter *Abspielen*, Standard: an) stoppt das
+Abspielen sofort, sobald du selbst die Maus bewegst, klickst, das Mausrad
+drehst oder eine Taste drückst. Danach erscheint eine Meldung, was erkannt
+wurde (z. B. „Abgebrochen: Benutzereingabe erkannt - Mausbewegung bei
+(600, 500)“). Die Meldung steht auch in der Statuszeile und, wenn das Skript
+in einer Konsole läuft, dort.
+
+- Die Überwachung beginnt erst **nach der Startverzögerung**. Während des
+  Countdowns kannst du also noch zum Programm wechseln.
+- Die eigenen Mausbewegungen, Klicks und Tastendrücke des Abspielens lösen
+  keinen Abbruch aus.
+- **Esc** stoppt wie bisher ohne Meldung.
+
 ## Wartezeiten und Dauer
 
 - **Standard:** Jeder Schritt wartet vorher die **Standard-Wartezeit**
@@ -138,6 +153,7 @@ die Felder in der Datei, die für seinen Typ wichtig sind:
     "record_timing": true,
     "record_keyboard": true,
     "minimize_on_play": true,
+    "abort_on_input": true,
     "bring_to_front": true
   },
   "program": {
